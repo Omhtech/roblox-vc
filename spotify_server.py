@@ -59,7 +59,10 @@ def add_cors_headers(response):
 	response.headers['Access-Control-Allow-Origin'] = '*'
 	response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
 	response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-	response.headers['Cache-Control'] = 'public, max-age=86400'
+	if request.path.startswith('/files/'):
+		response.headers['Cache-Control'] = 'public, max-age=86400'
+	else:
+		response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
 	return response
 
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID") or os.getenv("SPOTIFY_CLIENT_ID")
@@ -77,6 +80,29 @@ def check_dependencies():
 		logging.error("Missing dependencies: %s. Install ffmpeg/ffplay and ensure they're in PATH.", ", ".join(missing))
 		print(f"Error: Missing dependencies: {', '.join(missing)}. Install ffmpeg/ffplay and ensure they're in PATH.")
 		exit(1)
+
+
+def terminate_playback_process(process):
+	"""Stop ffplay and any process it started, including Windows descendants."""
+	if not process:
+		return
+
+	try:
+		if os.name == "nt":
+			subprocess.run(
+				["taskkill", "/PID", str(process.pid), "/T", "/F"],
+				check=False,
+				stdout=subprocess.DEVNULL,
+				stderr=subprocess.DEVNULL,
+			)
+		else:
+			process.terminate()
+			process.wait(timeout=1)
+	except Exception:
+		try:
+			process.kill()
+		except Exception:
+			pass
 
 check_dependencies()
 
@@ -596,14 +622,7 @@ def play():
 				current_path = path
 			
 			if current_process:
-				try:
-					current_process.terminate()
-					current_process.wait(timeout=1)
-				except:
-					try:
-						current_process.kill()
-					except:
-						pass
+				terminate_playback_process(current_process)
 				current_process = None
 			
 
@@ -648,14 +667,7 @@ def pause():
 			else:
 				paused_offset = 0.0
 			
-			try:
-				current_process.terminate()
-				current_process.wait(timeout=1)
-			except:
-				try:
-					current_process.kill()
-				except:
-					pass
+			terminate_playback_process(current_process)
 			current_process = None
 			is_paused = True
 		
@@ -711,21 +723,17 @@ def resume():
 @app.route("/stop", methods=["GET"])
 def stop():
 	"""Stop current song"""
-	global current_process, is_paused
+	global current_process, is_paused, playback_start_time, paused_offset, current_path
 	
 	with playback_lock:
 		if current_process:
-			try:
-				current_process.terminate()
-				current_process.wait(timeout=1)
-			except:
-				try:
-					current_process.kill()
-				except:
-					pass
+			terminate_playback_process(current_process)
 		
 		current_process = None
 		is_paused = False
+		playback_start_time = None
+		paused_offset = 0.0
+		current_path = None
 	
 	print("Song stopped")
 	return jsonify({"status": "stopped"}), 200
